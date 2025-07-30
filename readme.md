@@ -13,4 +13,4 @@
     - Correct links by matching with .csv file
     - Return output in .xlsx file
 ## Running the .py file
-  - 
+  - Use diigo_processing.ipynb to specify file paths and run the program
