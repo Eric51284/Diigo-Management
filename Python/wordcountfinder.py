@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import re
@@ -8,11 +9,134 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
+try:
+    import trafilatura
+except Exception:
+    trafilatura = None
+
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+BOILERPLATE_TAGS = [
+    "script",
+    "style",
+    "noscript",
+    "svg",
+    "iframe",
+    "nav",
+    "aside",
+    "footer",
+    "form",
+]
+
+BOILERPLATE_CLASS_ID_PATTERN = re.compile(
+    r"(^|[-_\s])(ad|ads|advert|advertisement|sponsor|promo|related|newsletter|"
+    r"footer|sidebar|share|social|cookie|banner|recommend|trending|outbrain|"
+    r"taboola)($|[-_\s])",
+    re.IGNORECASE,
+)
+
+
+def normalize_text(text):
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def count_words(text):
+    words = re.findall(r"\b[\w'-]+\b", text)
+    return len(words)
+
+
+def extract_json_ld_article_text(html_text):
+    """Extract article-like text from JSON-LD fields such as articleBody."""
+    try:
+        soup = BeautifulSoup(html_text, "html.parser")
+        scripts = soup.find_all("script", type="application/ld+json")
+        candidates = []
+
+        def collect_texts(obj):
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if key in {"articleBody", "text", "description"}:
+                        text_val = normalize_text(value)
+                        if text_val:
+                            candidates.append(text_val)
+                    else:
+                        collect_texts(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    collect_texts(item)
+
+        for script in scripts:
+            if not script.string:
+                continue
+            try:
+                data = json.loads(script.string)
+            except Exception:
+                continue
+            collect_texts(data)
+
+        if not candidates:
+            return "", "jsonld_unavailable"
+
+        best_text = max(candidates, key=count_words)
+        return best_text, "jsonld"
+    except Exception:
+        return "", "jsonld_failed"
+
+
+def extract_main_text_with_bs4(soup):
+    for tag in soup(["script", "style", "noscript", "svg", "iframe"]):
+        tag.decompose()
+
+    nodes_to_remove = []
+    for node in soup.find_all(True):
+        class_attr = " ".join(node.get("class", []))
+        id_attr = node.get("id", "")
+        marker = f"{class_attr} {id_attr}".strip()
+        if marker and BOILERPLATE_CLASS_ID_PATTERN.search(marker):
+            nodes_to_remove.append(node)
+
+    for node in nodes_to_remove:
+        node.decompose()
+
+    article_node = soup.find("article")
+    if article_node:
+        return normalize_text(article_node.get_text(" ", strip=True)), "article_tag"
+
+    main_node = soup.find("main")
+    if main_node:
+        return normalize_text(main_node.get_text(" ", strip=True)), "main_tag"
+
+    if soup.body:
+        return normalize_text(soup.body.get_text(" ", strip=True)), "body_fallback"
+
+    return normalize_text(soup.get_text(" ", strip=True)), "document_fallback"
+
+
+def extract_main_text_with_trafilatura(html_text):
+    if trafilatura is None:
+        return "", "trafilatura_unavailable"
+
+    try:
+        extracted = trafilatura.extract(
+            html_text,
+            include_comments=False,
+            include_tables=False,
+            favor_precision=True,
+        )
+        extracted = normalize_text(extracted)
+        if extracted:
+            return extracted, "trafilatura"
+    except Exception:
+        pass
+
+    return "", "trafilatura_failed"
 
 
 def get_article_word_count(url):
@@ -29,33 +153,90 @@ def get_article_word_count(url):
         response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
 
-        soup = BeautifulSoup(response.content, "html.parser")
+        html_text = response.text
+        candidates = []
 
-        for tag in soup(["script", "style", "noscript", "svg", "iframe"]):
-            tag.decompose()
+        jsonld_text, jsonld_method = extract_json_ld_article_text(html_text)
+        if jsonld_text:
+            candidates.append((jsonld_text, jsonld_method))
+
+        tr_text, tr_method = extract_main_text_with_trafilatura(html_text)
+        if tr_text:
+            candidates.append((tr_text, tr_method))
+
+        soup = BeautifulSoup(response.content, "html.parser")
 
         article_node = soup.find("article")
         if article_node:
-            text = article_node.get_text(" ", strip=True)
-        elif soup.body:
-            text = soup.body.get_text(" ", strip=True)
+            article_p_text = normalize_text(
+                " ".join(p.get_text(" ", strip=True) for p in article_node.find_all("p"))
+            )
+            if article_p_text:
+                candidates.append((article_p_text, "article_p"))
+
+            article_raw_text = normalize_text(article_node.get_text(" ", strip=True))
+            if article_raw_text:
+                candidates.append((article_raw_text, "article_tag"))
+
+        main_node = soup.find("main")
+        if main_node:
+            main_p_text = normalize_text(
+                " ".join(p.get_text(" ", strip=True) for p in main_node.find_all("p"))
+            )
+            if main_p_text:
+                candidates.append((main_p_text, "main_p"))
+
+        all_p_text = normalize_text(
+            " ".join(p.get_text(" ", strip=True) for p in soup.find_all("p"))
+        )
+        if all_p_text:
+            candidates.append((all_p_text, "all_p"))
+
+        bs4_text, bs4_method = extract_main_text_with_bs4(soup)
+        if bs4_text:
+            candidates.append((bs4_text, bs4_method))
+
+        if soup.body:
+            body_text = normalize_text(soup.body.get_text(" ", strip=True))
+            if body_text:
+                candidates.append((body_text, "body_full"))
+
+        scored = []
+        for candidate_text, candidate_method in candidates:
+            wc = count_words(candidate_text)
+            if wc > 0:
+                scored.append((wc, candidate_method))
+
+        if not scored:
+            return None, "no_text_found", "no_candidate_text"
+
+        wc_by_method = {method: wc for wc, method in scored}
+
+        for preferred_method in ["article_p", "main_p", "jsonld", "trafilatura", "article_tag"]:
+            preferred_wc = wc_by_method.get(preferred_method, 0)
+            if preferred_wc >= 120:
+                return preferred_wc, "success", preferred_method
+
+        non_fullpage = [(wc, method) for wc, method in scored if method not in {"all_p", "body_full"}]
+        if non_fullpage:
+            best_wc, best_method = max(non_fullpage, key=lambda item: item[0])
+            return best_wc, "success", best_method
+
+        ranked = sorted(scored, key=lambda item: item[0], reverse=True)
+        if len(ranked) >= 2 and ranked[0][0] > int(ranked[1][0] * 1.6) and (ranked[0][0] - ranked[1][0]) > 500:
+            best_wc, best_method = ranked[1]
         else:
-            text = soup.get_text(" ", strip=True)
+            best_wc, best_method = ranked[0]
 
-        text = re.sub(r"\s+", " ", text).strip()
-        words = re.findall(r"\b[\w'-]+\b", text)
-
-        if not words:
-            return None, "no_text_found"
-
-        return len(words), "success"
+        return best_wc, "success", best_method
 
     except requests.exceptions.Timeout:
-        return None, "timeout"
+        return None, "timeout", "request_timeout"
     except requests.exceptions.RequestException:
-        return None, "request_error"
-    except Exception:
-        return None, "error"
+        return None, "request_error", "request_error"
+    except Exception as exc:
+        logger.warning(f"Unexpected parse error for {url}: {type(exc).__name__}: {exc}")
+        return None, "error", f"unexpected_error_{type(exc).__name__}"
 
 
 def build_output_path(input_csv_path, output_csv_path=None):
@@ -82,13 +263,16 @@ def apply_word_counts_to_csv(
     note_col = df.columns[3]  # Column D
     url_col = df.columns[5]  # Column F
     status_col = "wordcount_status"
+    method_col = "wordcount_method"
 
     df[note_col] = df[note_col].astype("object")
     df[status_col] = "no_url"
+    df[method_col] = "not_processed"
 
     logger.info(f"Using column F for URLs: {url_col}")
     logger.info(f"Writing word counts to column D: {note_col}")
     logger.info(f"Writing processing status to column: {status_col}")
+    logger.info(f"Writing extraction method to column: {method_col}")
 
     total_urls = int(df[url_col].notna().sum())
     processed = 0
@@ -97,18 +281,21 @@ def apply_word_counts_to_csv(
     for index, url in df[url_col].items():
         if pd.isna(url):
             df.at[index, status_col] = "no_url"
+            df.at[index, method_col] = "no_url"
             continue
 
         url_text = str(url).strip()
         if not url_text:
             df.at[index, status_col] = "no_url"
+            df.at[index, method_col] = "no_url"
             continue
 
         processed += 1
         logger.info(f"Processing {processed}/{total_urls}: {url_text[:90]}")
 
-        word_count, status = get_article_word_count(url_text)
+        word_count, status, method = get_article_word_count(url_text)
         df.at[index, status_col] = status
+        df.at[index, method_col] = method
 
         if status == "success" and word_count is not None:
             existing_note = df.at[index, note_col]
