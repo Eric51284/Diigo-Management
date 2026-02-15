@@ -14,3 +14,14 @@
     - Return output in .xlsx file
 ## Running the .py file
   - Use diigo_processing.ipynb to specify file paths and run the program
+
+## For New Articles Only
+ - run just the last 2 cells in diigo_processing.ipynb
+   - to set input and output file paths
+     - input path is .docx file containing export from diigo outliner with only new files included
+     - output path is .xlsx file that will contain fetched dates, along with article titles and links
+   - and then will run NewArticles.py that will extract the dates and create the .xlsx file
+# UPDATE 2026-02-14
+## Transitioned from diigo to raindrop.io
+ - imported all diigo bookmarks into raindrop
+ - use expand_redirects.py to correct 'flip.it' shortcuts to full urls

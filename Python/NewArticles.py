@@ -456,11 +456,11 @@ def create_excel_file(articles, output_path):
     logger.info(f"Excel file saved successfully")
 
 
-def main():
+def main(docx_path=None, output_path=None):
     """Main function"""
     # Corrected relative paths
-    docx_path = r".\Source files\Diigo New Articles.docx"
-    output_path = r".\Output files\Article_Publication_Dates.xlsx"
+    # docx_path = r".\Source files\Diigo New Articles.docx"
+    # output_path = r".\Output files\Article_Publication_Dates.xlsx"
 
     try:
         # Step 1: Extract articles and links from Word document
@@ -501,4 +501,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Set default paths here if running as a script
+    default_docx_path = r".\Source files\Diigo New Articles.docx"
+    default_output_path = r".\Output files\Article_Publication_Dates.xlsx"
+    main(default_docx_path, default_output_path)

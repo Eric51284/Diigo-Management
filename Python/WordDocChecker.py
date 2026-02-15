@@ -174,7 +174,7 @@ def suggest_improved_detection(missed_articles):
 
 def main():
     """Main function"""
-    docx_path = r".\Source files\Diigo New Articles.docx"
+    docx_path = r".\Output files\Diigo Outlined Articles.docx"
 
     try:
         current_articles, all_potential, missed = analyze_word_document(docx_path)
@@ -184,11 +184,11 @@ def main():
         print("SUMMARY:")
         print(f"Current logic finds: {len(current_articles)} articles")
         print(f"Broader detection finds: {len(all_potential)} potential articles")
-        print(f"You said there are: 39 articles")
-        print(f"Missing: {39 - len(current_articles)} articles")
+        print(f"You said there are: 194 articles")
+        print(f"Missing: {194 - len(current_articles)} articles")
 
         if missed:
-            print(f"\nTo find all 39 articles, you may need to:")
+            print(f"\nTo find all 194 articles, you may need to:")
             print("1. Update the detection logic to include the missed patterns")
             print("2. Or manually add the missing articles to your Excel file")
 
