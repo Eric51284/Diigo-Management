@@ -16,7 +16,7 @@
   - Use diigo_processing.ipynb to specify file paths and run the program
 
 ## For New Articles Only
- - run just the last 2 cells in diigo_processing.ipynb
+ - run just the cells 9 and 10 in diigo_processing.ipynb
    - to set input and output file paths
      - input path is .docx file containing export from diigo outliner with only new files included
      - output path is .xlsx file that will contain fetched dates, along with article titles and links
@@ -25,3 +25,4 @@
 ## Transitioned from diigo to raindrop.io
  - imported all diigo bookmarks into raindrop
  - use expand_redirects.py to correct 'flip.it' shortcuts to full urls
+ - raindroptagger.py created to collect pub dates and word counts from raindrop.io exported csv files
