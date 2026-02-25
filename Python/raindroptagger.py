@@ -5,20 +5,68 @@ import os
 import re
 import time
 from datetime import datetime
+from urllib.parse import urlparse
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 try:
     import trafilatura
 except Exception:
     trafilatura = None
 
+try:
+    import browser_cookie3
+except Exception:
+    browser_cookie3 = None
+
 from docx import Document
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def build_http_session():
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        backoff_factor=1.0,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset(["GET", "HEAD", "OPTIONS"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+HTTP_SESSION = build_http_session()
+
+
+def get_browser_cookie_jar(browser_name, url):
+    if browser_cookie3 is None:
+        raise RuntimeError("browser_cookie3 is not installed")
+
+    hostname = urlparse(url).hostname
+    if not hostname:
+        raise ValueError(f"Could not determine hostname for URL: {url}")
+
+    loaders = {
+        "chrome": browser_cookie3.chrome,
+        "edge": browser_cookie3.edge,
+        "firefox": browser_cookie3.firefox,
+    }
+    loader = loaders.get(browser_name)
+    if loader is None:
+        raise ValueError(f"Unsupported browser for cookies: {browser_name}")
+
+    return loader(domain_name=hostname)
 
 
 # ---------- Helpers copied/adapted from existing scripts ----------
@@ -356,17 +404,23 @@ def extract_articles_and_links_from_docx(docx_path):
     return articles
 
 
-def fetch_url_once(url, timeout=30):
+def fetch_url_once(url, timeout=30, cookie_jar=None):
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/91.0.4472.124 Safari/537.36"
-        )
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
     }
     try:
-        resp = requests.get(url, headers=headers, timeout=timeout)
-        resp.raise_for_status()
+        resp = HTTP_SESSION.get(url, headers=headers, timeout=timeout, cookies=cookie_jar)
+        status_code = resp.status_code
+        if status_code >= 400:
+            logger.warning(f"HTTP {status_code} for {url}")
+            return None, None, f"http_{status_code}"
         html_text = resp.text
         soup = BeautifulSoup(resp.content, "html.parser")
         return html_text, soup, "success"
@@ -385,7 +439,15 @@ def build_output_path(input_path, suffix="_raindroptagged.csv"):
     return f"{root}{suffix}"
 
 
-def process_articles(articles, delay=2.0, heartbeat_every=10):
+def should_attempt_manual_retry(fetch_status):
+    if not fetch_status:
+        return False
+    if fetch_status.startswith("http_"):
+        return True
+    return fetch_status in {"request_error", "timeout"}
+
+
+def process_articles(articles, delay=2.0, heartbeat_every=10, manual_browser_retry=False, browser_cookies=None):
     total = len(articles)
     processed = 0
     success_count = 0
@@ -400,7 +462,35 @@ def process_articles(articles, delay=2.0, heartbeat_every=10):
         logger.info(f"[{processed}/{total}] Fetching {url[:90]}")
         html_text, soup, fetch_status = fetch_url_once(url)
         if fetch_status != "success":
-            article.update({"pub_date": None, "date_status": fetch_status, "wordcount": None, "wc_status": fetch_status, "wc_method": None})
+            retried_status = fetch_status
+            if manual_browser_retry and should_attempt_manual_retry(fetch_status):
+                logger.info("Manual browser retry enabled for %s", url)
+                logger.info("Open this URL in your browser, let it fully load, then press Enter here to retry.")
+                try:
+                    input("Press Enter to retry this URL now... ")
+                except EOFError:
+                    logger.warning("No interactive input available; skipping manual retry for %s", url)
+                else:
+                    cookie_jar = None
+                    if browser_cookies:
+                        try:
+                            cookie_jar = get_browser_cookie_jar(browser_cookies, url)
+                            logger.info("Loaded browser cookies from %s for %s", browser_cookies, url)
+                        except Exception as cookie_error:
+                            logger.warning("Could not load %s cookies for %s: %s", browser_cookies, url, cookie_error)
+                    html_text, soup, retry_status = fetch_url_once(url, cookie_jar=cookie_jar)
+                    if retry_status == "success":
+                        pub_date, date_status = get_pub_date_from_soup(soup)
+                        wc, wc_status, wc_method = get_wordcount_from_html(html_text, soup)
+                        article.update({"pub_date": pub_date, "date_status": date_status, "wordcount": wc, "wc_status": wc_status, "wc_method": wc_method})
+                        if wc_status == "success":
+                            success_count += 1
+                        retried_status = "success"
+                    else:
+                        retried_status = f"manual_{retry_status}"
+
+            if retried_status != "success":
+                article.update({"pub_date": None, "date_status": retried_status, "wordcount": None, "wc_status": retried_status, "wc_method": None})
         else:
             pub_date, date_status = get_pub_date_from_soup(soup)
             wc, wc_status, wc_method = get_wordcount_from_html(html_text, soup)
@@ -457,6 +547,16 @@ def main():
     parser.add_argument("-o", "--output", help="Output CSV path")
     parser.add_argument("--delay", type=float, default=2.0, help="Delay between requests")
     parser.add_argument("--heartbeat-every", type=int, default=10, help="Heartbeat frequency")
+    parser.add_argument(
+        "--manual-browser-retry",
+        action="store_true",
+        help="On HTTP/request errors, pause and let you open the URL in a browser, then retry.",
+    )
+    parser.add_argument(
+        "--browser-cookies",
+        choices=["chrome", "edge", "firefox"],
+        help="Optional browser cookie source to use during manual retries.",
+    )
     args = parser.parse_args()
 
     articles = []
@@ -487,7 +587,16 @@ def main():
         logger.error("No articles found in input")
         return
 
-    processed = process_articles(articles, delay=args.delay, heartbeat_every=args.heartbeat_every)
+    if args.browser_cookies and not args.manual_browser_retry:
+        logger.warning("--browser-cookies is set but --manual-browser-retry is not enabled; cookies will not be used.")
+
+    processed = process_articles(
+        articles,
+        delay=args.delay,
+        heartbeat_every=args.heartbeat_every,
+        manual_browser_retry=args.manual_browser_retry,
+        browser_cookies=args.browser_cookies,
+    )
 
     if args.output:
         output_path = args.output
