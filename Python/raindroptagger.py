@@ -3,7 +3,9 @@ import json
 import logging
 import os
 import re
+import sys
 import time
+import webbrowser
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -447,7 +449,14 @@ def should_attempt_manual_retry(fetch_status):
     return fetch_status in {"request_error", "timeout"}
 
 
-def process_articles(articles, delay=2.0, heartbeat_every=10, manual_browser_retry=False, browser_cookies=None):
+def process_articles(
+    articles,
+    delay=2.0,
+    heartbeat_every=10,
+    manual_browser_retry=False,
+    browser_cookies=None,
+    manual_wait_seconds=20,
+):
     total = len(articles)
     processed = 0
     success_count = 0
@@ -465,12 +474,35 @@ def process_articles(articles, delay=2.0, heartbeat_every=10, manual_browser_ret
             retried_status = fetch_status
             if manual_browser_retry and should_attempt_manual_retry(fetch_status):
                 logger.info("Manual browser retry enabled for %s", url)
-                logger.info("Open this URL in your browser, let it fully load, then press Enter here to retry.")
                 try:
-                    input("Press Enter to retry this URL now... ")
-                except EOFError:
-                    logger.warning("No interactive input available; skipping manual retry for %s", url)
+                    opened = webbrowser.open(url, new=2)
+                    if opened:
+                        logger.info("Opened URL in your default browser for manual unlock.")
+                    else:
+                        logger.warning("Could not automatically open browser. Open URL manually: %s", url)
+                except Exception as open_error:
+                    logger.warning("Failed to open browser automatically for %s: %s", url, open_error)
+                logger.info("Let the page fully load in your browser, then press Enter here to retry.")
+                proceed_with_retry = False
+                if sys.stdin and sys.stdin.isatty():
+                    try:
+                        input("Press Enter to retry this URL now... ")
+                        proceed_with_retry = True
+                    except EOFError:
+                        logger.warning("No interactive input available for %s", url)
                 else:
+                    wait_seconds = max(0, int(manual_wait_seconds))
+                    if wait_seconds > 0:
+                        logger.warning(
+                            "No interactive stdin; waiting %ds before retry so you can open the URL in your browser.",
+                            wait_seconds,
+                        )
+                        time.sleep(wait_seconds)
+                        proceed_with_retry = True
+                    else:
+                        logger.warning("No interactive stdin and --manual-wait-seconds=0; skipping manual retry for %s", url)
+
+                if proceed_with_retry:
                     cookie_jar = None
                     if browser_cookies:
                         try:
@@ -557,6 +589,12 @@ def main():
         choices=["chrome", "edge", "firefox"],
         help="Optional browser cookie source to use during manual retries.",
     )
+    parser.add_argument(
+        "--manual-wait-seconds",
+        type=int,
+        default=20,
+        help="When stdin is non-interactive, wait this many seconds before manual retry.",
+    )
     args = parser.parse_args()
 
     articles = []
@@ -596,6 +634,7 @@ def main():
         heartbeat_every=args.heartbeat_every,
         manual_browser_retry=args.manual_browser_retry,
         browser_cookies=args.browser_cookies,
+        manual_wait_seconds=args.manual_wait_seconds,
     )
 
     if args.output:
