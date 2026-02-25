@@ -7,6 +7,7 @@ import sys
 import time
 import webbrowser
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -420,11 +421,11 @@ def fetch_url_once(url, timeout=30, cookie_jar=None):
     try:
         resp = HTTP_SESSION.get(url, headers=headers, timeout=timeout, cookies=cookie_jar)
         status_code = resp.status_code
-        if status_code >= 400:
-            logger.warning(f"HTTP {status_code} for {url}")
-            return None, None, f"http_{status_code}"
         html_text = resp.text
         soup = BeautifulSoup(resp.content, "html.parser")
+        if status_code >= 400:
+            logger.warning(f"HTTP {status_code} for {url}")
+            return html_text, soup, f"http_{status_code}"
         return html_text, soup, "success"
     except requests.exceptions.Timeout:
         return None, None, "timeout"
@@ -439,6 +440,96 @@ def fetch_url_once(url, timeout=30, cookie_jar=None):
 def build_output_path(input_path, suffix="_raindroptagged.csv"):
     root, ext = os.path.splitext(input_path)
     return f"{root}{suffix}"
+
+
+def sanitize_url_for_filename(url):
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path or ""
+    if path.endswith("/"):
+        path = path[:-1]
+    candidate = f"{host}{path}"
+    candidate = re.sub(r"[^a-zA-Z0-9._-]+", "_", candidate)
+    return candidate.strip("_")
+
+
+def find_local_html_path(article, url, local_html_dir=None, local_html_path_column="local_html_path"):
+    csv_path = article.get(local_html_path_column)
+    if csv_path and str(csv_path).strip():
+        direct_path = Path(str(csv_path).strip().strip('"'))
+        if direct_path.exists() and direct_path.is_file():
+            return direct_path
+
+    if not local_html_dir:
+        return None
+
+    directory = Path(local_html_dir)
+    if not directory.exists() or not directory.is_dir():
+        return None
+
+    url_key = sanitize_url_for_filename(url)
+    if url_key:
+        for ext in (".html", ".htm"):
+            candidate = directory / f"{url_key}{ext}"
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        for candidate in directory.glob(f"{url_key}*.htm*"):
+            if candidate.is_file():
+                return candidate
+
+    parsed = urlparse(url)
+    slug = Path(parsed.path).name
+    if slug:
+        slug_pattern = re.sub(r"[^a-zA-Z0-9._-]+", "_", slug).lower()
+        for candidate in directory.glob("*.htm*"):
+            if slug_pattern in candidate.stem.lower():
+                return candidate
+
+    return None
+
+
+def fetch_local_html(article, url, local_html_dir=None, local_html_path_column="local_html_path"):
+    local_path = find_local_html_path(
+        article,
+        url,
+        local_html_dir=local_html_dir,
+        local_html_path_column=local_html_path_column,
+    )
+    if local_path is None:
+        return None, None, None, "local_html_not_found"
+
+    try:
+        html_text = local_path.read_text(encoding="utf-8", errors="ignore")
+        soup = BeautifulSoup(html_text, "html.parser")
+        return html_text, soup, str(local_path), "success"
+    except Exception as exc:
+        logger.warning("Failed reading local HTML %s: %s", local_path, exc)
+        return None, None, str(local_path), "local_html_read_error"
+
+
+def save_failed_response_html(url, html_text, local_html_dir, status_label, attempt_label="initial"):
+    if not local_html_dir or not html_text:
+        return None
+
+    directory = Path(local_html_dir)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        logger.warning("Could not create local HTML dir %s: %s", directory, exc)
+        return None
+
+    url_key = sanitize_url_for_filename(url) or "failed_url"
+    safe_status = re.sub(r"[^a-zA-Z0-9._-]+", "_", (status_label or "error"))
+    safe_attempt = re.sub(r"[^a-zA-Z0-9._-]+", "_", (attempt_label or "attempt"))
+    save_path = directory / f"{url_key}__{safe_attempt}__{safe_status}.html"
+
+    try:
+        save_path.write_text(html_text, encoding="utf-8", errors="ignore")
+        logger.info("Saved failed response HTML to %s", save_path)
+        return str(save_path)
+    except Exception as exc:
+        logger.warning("Failed to save response HTML to %s: %s", save_path, exc)
+        return None
 
 
 def should_attempt_manual_retry(fetch_status):
@@ -456,6 +547,8 @@ def process_articles(
     manual_browser_retry=False,
     browser_cookies=None,
     manual_wait_seconds=20,
+    local_html_dir=None,
+    local_html_path_column="local_html_path",
 ):
     total = len(articles)
     processed = 0
@@ -470,7 +563,15 @@ def process_articles(
         processed += 1
         logger.info(f"[{processed}/{total}] Fetching {url[:90]}")
         html_text, soup, fetch_status = fetch_url_once(url)
+        failed_html_path = None
         if fetch_status != "success":
+            failed_html_path = save_failed_response_html(
+                url,
+                html_text,
+                local_html_dir=local_html_dir,
+                status_label=fetch_status,
+                attempt_label="initial",
+            )
             retried_status = fetch_status
             if manual_browser_retry and should_attempt_manual_retry(fetch_status):
                 logger.info("Manual browser retry enabled for %s", url)
@@ -519,14 +620,54 @@ def process_articles(
                             success_count += 1
                         retried_status = "success"
                     else:
+                        manual_failed_html_path = save_failed_response_html(
+                            url,
+                            html_text,
+                            local_html_dir=local_html_dir,
+                            status_label=retry_status,
+                            attempt_label="manual",
+                        )
+                        if manual_failed_html_path:
+                            failed_html_path = manual_failed_html_path
                         retried_status = f"manual_{retry_status}"
 
             if retried_status != "success":
-                article.update({"pub_date": None, "date_status": retried_status, "wordcount": None, "wc_status": retried_status, "wc_method": None})
+                local_html_text, local_html_soup, local_html_source, local_html_status = fetch_local_html(
+                    article,
+                    url,
+                    local_html_dir=local_html_dir,
+                    local_html_path_column=local_html_path_column,
+                )
+                if local_html_status == "success":
+                    pub_date, date_status = get_pub_date_from_soup(local_html_soup)
+                    wc, wc_status, wc_method = get_wordcount_from_html(local_html_text, local_html_soup)
+                    article.update(
+                        {
+                            "pub_date": pub_date,
+                            "date_status": f"local_{date_status}",
+                            "wordcount": wc,
+                            "wc_status": f"local_{wc_status}",
+                            "wc_method": f"local_{wc_method}" if wc_method else "local",
+                            "local_html_path": local_html_source or failed_html_path,
+                        }
+                    )
+                    if wc_status == "success":
+                        success_count += 1
+                else:
+                    article.update(
+                        {
+                            "pub_date": None,
+                            "date_status": retried_status,
+                            "wordcount": None,
+                            "wc_status": retried_status,
+                            "wc_method": None,
+                            "local_html_path": local_html_source or failed_html_path,
+                        }
+                    )
         else:
             pub_date, date_status = get_pub_date_from_soup(soup)
             wc, wc_status, wc_method = get_wordcount_from_html(html_text, soup)
-            article.update({"pub_date": pub_date, "date_status": date_status, "wordcount": wc, "wc_status": wc_status, "wc_method": wc_method})
+            article.update({"pub_date": pub_date, "date_status": date_status, "wordcount": wc, "wc_status": wc_status, "wc_method": wc_method, "local_html_path": None})
             if date_status == "no_date_found":
                 logger.info(f"No date for: {title[:60]}")
             if wc_status == "success":
@@ -548,7 +689,7 @@ def process_articles(
 def save_results_csv(articles, output_csv_path):
     df = pd.DataFrame(articles)
     # normalize column names
-    desired = ["title", "url", "pub_date", "date_status", "wordcount", "wc_status", "wc_method"]
+    desired = ["title", "url", "pub_date", "date_status", "wordcount", "wc_status", "wc_method", "local_html_path"]
     for col in desired:
         if col not in df.columns:
             df[col] = None
@@ -595,6 +736,15 @@ def main():
         default=20,
         help="When stdin is non-interactive, wait this many seconds before manual retry.",
     )
+    parser.add_argument(
+        "--local-html-dir",
+        help="Directory to search for saved .html/.htm files when URL fetch fails.",
+    )
+    parser.add_argument(
+        "--local-html-path-column",
+        default="local_html_path",
+        help="CSV column containing per-row local HTML file path fallback.",
+    )
     args = parser.parse_args()
 
     articles = []
@@ -617,7 +767,8 @@ def main():
         for _, row in df.iterrows():
             url = row[url_col]
             title = row[title_col] if title_col else ""
-            articles.append({"title": title, "url": url})
+            local_html_path = row[args.local_html_path_column] if args.local_html_path_column in df.columns else None
+            articles.append({"title": title, "url": url, args.local_html_path_column: local_html_path})
     else:
         parser.error("Provide either --docx or --csv input")
 
@@ -635,6 +786,8 @@ def main():
         manual_browser_retry=args.manual_browser_retry,
         browser_cookies=args.browser_cookies,
         manual_wait_seconds=args.manual_wait_seconds,
+        local_html_dir=args.local_html_dir,
+        local_html_path_column=args.local_html_path_column,
     )
 
     if args.output:

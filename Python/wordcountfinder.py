@@ -248,7 +248,11 @@ def build_output_path(input_csv_path, output_csv_path=None):
 
 
 def apply_word_counts_to_csv(
-    input_csv_path, output_csv_path=None, delay=2.0, in_place=False
+    input_csv_path,
+    output_csv_path=None,
+    delay=2.0,
+    in_place=False,
+    heartbeat_every=10,
 ):
     """Read URLs from column F and write word counts to column D (note)."""
     if not os.path.exists(input_csv_path):
@@ -277,6 +281,7 @@ def apply_word_counts_to_csv(
     total_urls = int(df[url_col].notna().sum())
     processed = 0
     success = 0
+    start_time = time.perf_counter()
 
     for index, url in df[url_col].items():
         if pd.isna(url):
@@ -304,6 +309,22 @@ def apply_word_counts_to_csv(
             else:
                 df.at[index, note_col] = f"{existing_note} | word_count: {word_count}"
             success += 1
+
+        if heartbeat_every > 0 and processed % heartbeat_every == 0:
+            elapsed = time.perf_counter() - start_time
+            avg_per_row = elapsed / processed if processed else 0
+            remaining = max(total_urls - processed, 0)
+            eta_seconds = avg_per_row * remaining
+            progress_pct = (processed / total_urls * 100) if total_urls else 100
+            logger.info(
+                "HEARTBEAT: %d/%d (%.1f%%) complete | elapsed %.1fs | eta %.1fs | success %d",
+                processed,
+                total_urls,
+                progress_pct,
+                elapsed,
+                eta_seconds,
+                success,
+            )
 
         if processed < total_urls:
             time.sleep(delay)
@@ -350,6 +371,12 @@ def parse_args():
         action="store_true",
         help="Overwrite the input CSV instead of creating a new output file.",
     )
+    parser.add_argument(
+        "--heartbeat-every",
+        type=int,
+        default=10,
+        help="Log heartbeat every N processed URLs (0 disables heartbeat).",
+    )
     return parser.parse_args()
 
 
@@ -360,6 +387,7 @@ def main():
         output_csv_path=args.output_csv,
         delay=args.delay,
         in_place=args.in_place,
+        heartbeat_every=args.heartbeat_every,
     )
     print(f"Updated CSV saved to: {os.path.abspath(output_path)}")
 
