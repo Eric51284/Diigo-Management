@@ -27,3 +27,4 @@
  - use expand_redirects.py to correct 'flip.it' shortcuts to full urls
  - raindroptagger.py created to collect pub dates and word counts from raindrop.io exported csv files
  - to run, use rdtagger snippet in an ipynb cell
+ - Once updated csv (with pub dates and wordcounts) is obtained, can run `add_raindrop_to_outline.py`
