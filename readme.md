@@ -26,3 +26,4 @@
  - imported all diigo bookmarks into raindrop
  - use expand_redirects.py to correct 'flip.it' shortcuts to full urls
  - raindroptagger.py created to collect pub dates and word counts from raindrop.io exported csv files
+ - to run, use rdtagger snippet in an ipynb cell
