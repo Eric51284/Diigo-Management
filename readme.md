@@ -26,5 +26,14 @@
  - imported all diigo bookmarks into raindrop
  - use expand_redirects.py to correct 'flip.it' shortcuts to full urls
  - raindroptagger.py created to collect pub dates and word counts from raindrop.io exported csv files
- - to run, use rdtagger snippet in an ipynb cell
- - Once updated csv (with pub dates and wordcounts) is obtained, can run `add_raindrop_to_outline.py`
+ - to run, use `rdtagger` snippet in an ipynb cell
+ - Once updated csv (with pub dates and wordcounts) is obtained, ~can run `add_raindrop_to_outline.py`~ (this was intended to automate categorization for outlines, but isn't working as well as the original - which was generated using poe.com)
+ - MORE FUNCTIONAL APPROACH
+   - in raindrop.io, add tags like `_outl:___` with the roman numeral and letter for the appropriate outline section
+   - export relevant files to .csv
+   - run `add_outl_articles.py` on the exported csv to include in the current html
+     - To use it again in the future, just replace the contents of outl.csv with the new export and run: 
+  
+  `python "Python/add_outl_articles.py"`
+   - copy and post the new html as appropriate
+   - remove `_outl:___` tags from raindrop.io entries
