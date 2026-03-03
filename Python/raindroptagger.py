@@ -1,3 +1,124 @@
+"""
+raindroptagger.py
+=================
+Built by Claude Sonnet-4.6 on 2026-02-26
+
+Fetches each article URL from a CSV or Word docx input file and enriches it
+with two pieces of metadata extracted from the live page (or a saved local
+HTML fallback):
+
+    • pub_date   — publication date (YYYY-MM-DD or partial)
+    • wordcount  — estimated article body word count
+
+The enriched data is written to an output CSV for downstream use (e.g. as
+input to outline_updater.py or raindrop import workflows).
+
+Usage
+-----
+    # From a CSV file:
+    python raindroptagger.py --csv input.csv
+    python raindroptagger.py --csv input.csv -o output_tagged.csv
+
+    # From a Word document:
+    python raindroptagger.py --docx articles.docx
+    python raindroptagger.py --docx articles.docx -o output_tagged.csv
+
+    # Slow down requests (default: 2 s between each):
+    python raindroptagger.py --csv input.csv --delay 3.5
+
+    # Retry blocked URLs via the browser, then re-fetch with cookies:
+    python raindroptagger.py --csv input.csv --manual-browser-retry
+    python raindroptagger.py --csv input.csv --manual-browser-retry --browser-cookies edge
+
+    # Fall back to locally saved HTML files for failed fetches:
+    python raindroptagger.py --csv input.csv --local-html-dir "Source files/saved_html"
+
+    # Use a per-row column in the CSV to point to a saved HTML file:
+    python raindroptagger.py --csv input.csv --local-html-path-column local_html_path
+
+Requirements
+------------
+    pip install pandas requests beautifulsoup4 python-docx
+
+Optional (improves text extraction accuracy):
+    pip install trafilatura       # cleaner article-body extraction
+    pip install browser_cookie3   # pass live browser cookies on manual retries
+
+Input format: CSV
+-----------------
+Any CSV containing at minimum a URL column.  Column names are auto-detected
+(case-insensitive):
+
+    url column   — detected by name: url, URL, link, Link
+                   fallback: first column whose values look like URLs
+    title column — detected by name: title, Title, headline
+                   (optional; rows without a detected title column use "")
+    local_html_path
+                 — optional per-row path to a saved .html file used as a
+                   fallback when a live fetch fails; column name is
+                   configurable via --local-html-path-column
+
+Input format: Word docx
+-----------------------
+Every paragraph that starts with "-" or contains "http" is treated as an
+article entry.  The paragraph text (minus the leading "– ") becomes the
+title; hyperlinks embedded in the paragraph are extracted as the URL.
+
+Output CSV columns
+------------------
+    title           — article title (from input)
+    url             — article URL (from input)
+    pub_date        — publication date string (YYYY-MM-DD, YYYY-MM, or YYYY),
+                      or empty if not found
+    date_status     — how the date was found (meta, jsonld, time_attr,
+                      class_text, text_pattern, local_*, no_date_found…)
+    wordcount       — estimated article body word count (integer), or empty
+    wc_status       — success / no_url / no_text_found / http_NNN / …
+    wc_method       — extraction method used (article_p, trafilatura,
+                      jsonld, main_p, article_tag, local_*, …)
+    local_html_path — path to the saved HTML file used (if any)
+
+Date extraction strategy (in priority order)
+--------------------------------------------
+    1. HTML <meta> tags (article:published_time, DC.date, etc.)
+    2. JSON-LD structured data (datePublished, dateCreated, etc.)
+    3. <time datetime="…"> / <time pubdate> attributes
+    4. Common date-bearing CSS class names (.published-date, .timestamp, …)
+    5. Raw text pattern matching (e.g. "Published: March 2, 2026")
+
+Word-count extraction strategy (in priority order)
+---------------------------------------------------
+    1. JSON-LD articleBody / text / description fields
+    2. trafilatura (if installed)
+    3. <article> → <p> text nodes
+    4. <main> → <p> text nodes
+    5. All <p> text nodes
+    6. Full BS4 boilerplate-filtered body text
+
+CLI arguments
+-------------
+    --csv PATH                  Input CSV file
+    --docx PATH                 Input Word docx file
+    -o / --output PATH          Output CSV path
+                                  default for --csv:  <input>_raindroptagged.csv
+                                  default for --docx: Output files/raindrop_tagged.csv
+    --delay FLOAT               Seconds to wait between requests  [default: 2.0]
+    --heartbeat-every INT       Log a progress summary every N requests  [default: 10]
+    --manual-browser-retry      On HTTP/request errors, open the URL in the
+                                  default browser and pause for manual unlock,
+                                  then retry the fetch
+    --browser-cookies BROWSER   Load live browser cookies during manual retries
+                                  choices: chrome | edge | firefox
+    --manual-wait-seconds INT   When stdin is non-interactive (e.g. piped),
+                                  wait this many seconds before the retry
+                                  instead of prompting  [default: 20]
+    --local-html-dir DIR        Directory of saved .html/.htm fallback files;
+                                  filenames are matched by URL-derived slug
+    --local-html-path-column COL
+                                CSV column name for per-row local HTML paths
+                                  [default: local_html_path]
+"""
+
 import argparse
 import json
 import logging
