@@ -232,6 +232,23 @@ def main():
         if p:
             p.string = re.sub(r'\d+ articles', f'{total} articles', p.get_text())
 
+        # ── Update / add "Last updated" date paragraph in header ───────────────
+        today_str = date.today().isoformat()
+        date_p = next(
+            (tag for tag in header.find_all('p')
+             if re.search(r'updated', tag.get_text(), re.IGNORECASE)),
+            None,
+        )
+        if date_p:
+            date_p.string = f'Last updated: {today_str}'
+        else:
+            date_p = soup.new_tag('p')
+            date_p.string = f'Last updated: {today_str}'
+            if p:
+                p.insert_after(date_p)
+            else:
+                header.append(date_p)
+
     # ── Write HTML ─────────────────────────────────────────────────────────────
     with open(HTML_PATH, 'w', encoding='utf-8') as fh:
         fh.write(str(soup))

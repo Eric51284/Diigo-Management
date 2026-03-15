@@ -53,10 +53,18 @@ Any CSV containing at minimum a URL column.  Column names are auto-detected
                    fallback: first column whose values look like URLs
     title column — detected by name: title, Title, headline
                    (optional; rows without a detected title column use "")
+    notes column — detected by name: notes, Notes, note, Note, description,
+                   Description, annotation, comment, tags, Tags
+                   If found, wordcount and pub_date are appended to this
+                   column in the output (see below).  If no notes column is
+                   detected, a new "notes" column is created.
     local_html_path
                  — optional per-row path to a saved .html file used as a
                    fallback when a live fetch fails; column name is
                    configurable via --local-html-path-column
+
+All original input columns are preserved in the output in their original
+order.  Extra diagnostic columns are appended after them.
 
 Input format: Word docx
 -----------------------
@@ -66,8 +74,13 @@ title; hyperlinks embedded in the paragraph are extracted as the URL.
 
 Output CSV columns
 ------------------
-    title           — article title (from input)
-    url             — article URL (from input)
+For CSV input, the output preserves every original column.  The notes column
+(detected or newly created) is updated in place with appended metadata:
+
+    <original notes text> wordcount:nnnn pub:yyyy-mm-dd
+
+The following diagnostic columns are appended after all original columns:
+
     pub_date        — publication date string (YYYY-MM-DD, YYYY-MM, or YYYY),
                       or empty if not found
     date_status     — how the date was found (meta, jsonld, time_attr,
@@ -807,14 +820,64 @@ def process_articles(
     return articles
 
 
-def save_results_csv(articles, output_csv_path):
+def save_results_csv(articles, output_csv_path, original_columns=None, notes_col=None):
     df = pd.DataFrame(articles)
-    # normalize column names
-    desired = ["title", "url", "pub_date", "date_status", "wordcount", "wc_status", "wc_method", "local_html_path"]
-    for col in desired:
+
+    # ── Annotate the Notes column with wordcount and pub_date ────────────────
+    # Pattern written into notes: "wordcount:nnnn pub:yyyy-mm-dd"
+    # Skips a tag if an identical tag already exists in the notes text.
+    def _build_annotation(row, existing=""):
+        parts = []
+        wc = row.get("wordcount")
+        pub = row.get("pub_date")
+        if wc is not None and pd.notna(wc) and not re.search(r"wordcount:\d+", existing, re.IGNORECASE):
+            try:
+                parts.append(f"wordcount:{int(wc)}")
+            except (ValueError, TypeError):
+                pass
+        if pub and pd.notna(pub) and not re.search(r"pub:\d{4}", existing, re.IGNORECASE):
+            parts.append(f"pub:{pub}")
+        return " ".join(parts)
+
+    if notes_col:
+        if notes_col not in df.columns:
+            df[notes_col] = ""
+        def _update_notes(row):
+            existing = str(row[notes_col]).strip() if pd.notna(row[notes_col]) else ""
+            annotation = _build_annotation(row, existing)
+            if existing and annotation:
+                return f"{existing} {annotation}"
+            return existing or annotation
+        df[notes_col] = df.apply(_update_notes, axis=1)
+    else:
+        # No notes column in source — create one to carry the annotation
+        notes_col = "notes"
+        df[notes_col] = df.apply(lambda row: _build_annotation(row, ""), axis=1)
+        if original_columns is not None:
+            original_columns = list(original_columns) + [notes_col]
+
+    # ── Build output column order ─────────────────────────────────────────────
+    # Base: original input columns (in original order, notes already updated)
+    # Appended: diagnostic columns not present in the original input
+    extra_cols = ["pub_date", "date_status", "wordcount", "wc_status", "wc_method", "local_html_path"]
+
+    if original_columns:
+        base_cols = [c for c in original_columns if c in df.columns]
+        appended = [c for c in extra_cols if c in df.columns and c not in base_cols]
+        output_cols = base_cols + appended
+    else:
+        # docx path — sensible default ordering
+        fallback = ["title", "url", "notes"] + extra_cols
+        output_cols = [c for c in fallback if c in df.columns]
+        for c in df.columns:
+            if c not in output_cols:
+                output_cols.append(c)
+
+    for col in output_cols:
         if col not in df.columns:
             df[col] = None
-    df = df[desired]
+
+    df = df[output_cols]
     output_dir = os.path.dirname(output_csv_path)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -869,6 +932,8 @@ def main():
     args = parser.parse_args()
 
     articles = []
+    original_columns = None
+    notes_col = None
     if args.docx:
         if not os.path.exists(args.docx):
             raise FileNotFoundError(f"Docx not found: {args.docx}")
@@ -885,11 +950,20 @@ def main():
             if c in df.columns:
                 title_col = c
                 break
+        notes_col = None
+        for c in ["notes", "Notes", "note", "Note", "description", "Description", "annotation", "comment", "tags", "Tags"]:
+            if c in df.columns:
+                notes_col = c
+                break
+        original_columns = list(df.columns)
         for _, row in df.iterrows():
-            url = row[url_col]
-            title = row[title_col] if title_col else ""
-            local_html_path = row[args.local_html_path_column] if args.local_html_path_column in df.columns else None
-            articles.append({"title": title, "url": url, args.local_html_path_column: local_html_path})
+            article = {k: (None if pd.isna(v) else v) for k, v in row.items()}
+            # ensure internal lowercase keys used by process_articles
+            article["title"] = row[title_col] if title_col else ""
+            article["url"] = row[url_col]
+            if args.local_html_path_column not in article:
+                article[args.local_html_path_column] = None
+            articles.append(article)
     else:
         parser.error("Provide either --docx or --csv input")
 
@@ -919,7 +993,7 @@ def main():
         else:
             output_path = os.path.join("Output files", "raindrop_tagged.csv")
 
-    save_results_csv(processed, output_path)
+    save_results_csv(processed, output_path, original_columns=original_columns, notes_col=notes_col)
 
 
 if __name__ == "__main__":
