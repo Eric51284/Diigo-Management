@@ -21,19 +21,20 @@
      - input path is .docx file containing export from diigo outliner with only new files included
      - output path is .xlsx file that will contain fetched dates, along with article titles and links
    - and then will run NewArticles.py that will extract the dates and create the .xlsx file
-# UPDATE 2026-02-14
+# UPDATE 2026-03-15
 ## Transitioned from diigo to raindrop.io
  - imported all diigo bookmarks into raindrop
  - use expand_redirects.py to correct 'flip.it' shortcuts to full urls
  - raindroptagger.py created to collect pub dates and word counts from raindrop.io exported csv files
  - to run, use `rdtagger` snippet in an ipynb cell
  - Once updated csv (with pub dates and wordcounts) is obtained, ~can run `add_raindrop_to_outline.py`~ (this was intended to automate categorization for outlines, but isn't working as well as the original - which was generated using poe.com)
- - MORE FUNCTIONAL APPROACH
-   - in raindrop.io, add tags like `_outl:___` with the roman numeral and letter for the appropriate outline section
-   - export relevant files to .csv
-   - run `add_outl_articles.py` on the exported csv to include in the current html
-     - To use it again in the future, just replace the contents of outl.csv with the new export and run: 
-  
-  `python "Python/add_outl_articles.py"`
-   - copy and post the new html as appropriate
-   - remove `_outl:___` tags from raindrop.io entries
+# UPDATE 2026-02-14
+ - export all new raindrop imports to .csv and run `raindroptagger.py` on that .csv file to get wordcounts and pub dates
+   - Use `rdtagger` snippet in an ipynb cell for ease
+     - set input & output filenames and heartbeat timer within the snippet code
+ - Delete unsorted items from raindrop.io and re-upload with new records that now contain wordcounts and pub dates
+- In the .csv file, delete records that are not to be included in the AI-related html file
+- Add outline sections to tags in the .csv file
+  - in the form `, _outl:IV-C` using appropriate outline designators
+ - run `python "Python/add_outl_articles.py"` on the exported csv to include in the "Capstone AI articles.html"
+ - copy the new html to local project folder and push to website
