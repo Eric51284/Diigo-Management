@@ -30,7 +30,7 @@
  - Once updated csv (with pub dates and wordcounts) is obtained, ~can run `add_raindrop_to_outline.py`~ (this was intended to automate categorization for outlines, but isn't working as well as the original - which was generated using poe.com)
 # UPDATE 2026-02-14
  - export all new raindrop imports to .csv and run `raindroptagger.py` on that .csv file to get wordcounts and pub dates
-   - Use `rdtagger` snippet in an ipynb cell for ease
+   - Use `rdtagger` snippet for ease
      - set input & output filenames and heartbeat timer within the snippet code
  - Delete unsorted items from raindrop.io and re-upload with new records that now contain wordcounts and pub dates
 - In the .csv file, delete records that are not to be included in the AI-related html file
