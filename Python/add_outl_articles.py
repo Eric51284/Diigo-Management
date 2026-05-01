@@ -1,11 +1,15 @@
 """
 add_outl_articles.py
 --------------------
-Reads new articles from Source files/outl.csv and inserts them into the
+Reads new articles from Output files/new_rdtagged.csv and inserts them into the
 appropriate subsection of Output files/Capstone AI articles.html.
 
-Outline section is determined by the '_outl:' tag in the 'tags' column,
+Outline section is determined by the '_outl:' tags in the 'tags' column,
 e.g. '_outl:VII-A' → subsection id 's7a'.
+
+If two outline tags are present, the first is treated as the primary
+placement and the second as the alternate placement. Cross-reference text
+is added using existing display language ('→ primary: ...' / '→ also in ...').
 
 Publication date is taken from 'pub:YYYY-MM-DD' in the 'note' column.
 Word count is taken from 'wordcount:NNN' in the 'note' column.
@@ -25,7 +29,8 @@ from bs4 import BeautifulSoup
 # ── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR = r'c:\Users\evanzant\Dropbox (Personal)\Projects\Diigo Management'
 HTML_PATH = os.path.join(BASE_DIR, 'Output files', 'Capstone AI articles.html')
-CSV_PATH  = os.path.join(BASE_DIR, 'Source files', 'outl.csv')
+CSV_PATH  = os.path.join(BASE_DIR, 'Output files', 'new_rdtagged.csv')
+CSV_ENCODING = 'utf-8-sig'
 
 # ── Roman-numeral → integer ────────────────────────────────────────────────────
 ROMAN = {
@@ -74,7 +79,14 @@ def li_date(li) -> date | None:
 
 
 # ── HTML element builder ───────────────────────────────────────────────────────
-def make_li(soup, title: str, url: str, pub_date: str | None, wordcount: int | None):
+def make_li(
+    soup,
+    title: str,
+    url: str,
+    pub_date: str | None,
+    wordcount: int | None,
+    cross_ref: str | None = None,
+):
     """
     Build an article <li> matching the existing pattern:
 
@@ -82,7 +94,8 @@ def make_li(soup, title: str, url: str, pub_date: str | None, wordcount: int | N
         <a href="URL" rel="noopener" target="_blank">TITLE</a>
         <span class="meta">
           <span class="bd bd-d">DATE</span>
-          <span class="bd bd-w">NNN wds</span>   ← optional
+                    <span class="bd bd-w">NNN wds</span>   ← optional
+                    <span class="xr">→ ...</span>          ← optional cross-reference
         </span>
       </li>
     """
@@ -103,6 +116,11 @@ def make_li(soup, title: str, url: str, pub_date: str | None, wordcount: int | N
         wc_span.string = f'{wordcount:,} wds'
         meta.append(wc_span)
 
+    if cross_ref:
+        xr_span = soup.new_tag('span', **{'class': 'xr'})
+        xr_span.string = cross_ref
+        meta.append(xr_span)
+
     li.append(meta)
     return li
 
@@ -110,12 +128,15 @@ def make_li(soup, title: str, url: str, pub_date: str | None, wordcount: int | N
 # ── CSV parsing ────────────────────────────────────────────────────────────────
 def load_csv(csv_path: str) -> list[dict]:
     """
-    Returns a list of dicts with keys:
-      title, url, pub_date (str or None), wordcount (int or None), sub_id (str)
-    One entry per _outl: tag per row.
+        Returns a list of dicts with keys:
+            title, url, pub_date (str or None), wordcount (int or None),
+            sub_id (str), cross_ref (str or None)
+
+        Emits one entry per _outl: tag per row, preserving tag order so the
+        first tag is treated as primary and the second as alternate.
     """
     articles = []
-    with open(csv_path, newline='', encoding='utf-8') as fh:
+    with open(csv_path, newline='', encoding=CSV_ENCODING) as fh:
         for row in csv.DictReader(fh):
             title    = (row.get('title') or '').strip()
             url      = (row.get('url')   or '').strip()
@@ -133,17 +154,50 @@ def load_csv(csv_path: str) -> list[dict]:
             pub_m    = re.search(r'pub:(\d{4}-\d{2}-\d{2})', note)
             pub_date = pub_m.group(1) if pub_m else None
 
-            # collect _outl: tags
+            # Collect _outl: tags in listed order.
+            outl_sub_ids = []
             for tag in (t.strip() for t in tags_raw.split(',')):
                 sub_id = outl_to_sub_id(tag)
                 if sub_id:
-                    articles.append(dict(
-                        title=title,
-                        url=url,
-                        pub_date=pub_date,
-                        wordcount=wordcount,
-                        sub_id=sub_id,
-                    ))
+                    outl_sub_ids.append(sub_id)
+
+            if not outl_sub_ids:
+                continue
+
+            # If there are two or more outl tags, treat the first as primary and
+            # the second as secondary for cross-reference text.
+            primary_sub = outl_sub_ids[0]
+            secondary_sub = outl_sub_ids[1] if len(outl_sub_ids) > 1 else None
+
+            def fmt_section_label(sub_id: str) -> str:
+                m = re.fullmatch(r's(\d+)([a-z])', sub_id, re.IGNORECASE)
+                if not m:
+                    return sub_id
+                roman_map = {
+                    1: 'I', 2: 'II', 3: 'III', 4: 'IV', 5: 'V',
+                    6: 'VI', 7: 'VII', 8: 'VIII', 9: 'IX', 10: 'X',
+                }
+                num = int(m.group(1))
+                roman = roman_map.get(num, str(num))
+                letter = m.group(2).upper()
+                return f'§{roman}-{letter}'
+
+            for idx, sub_id in enumerate(outl_sub_ids):
+                cross_ref = None
+                if secondary_sub is not None:
+                    if idx == 0:
+                        cross_ref = f'→ also in {fmt_section_label(secondary_sub)}'
+                    else:
+                        cross_ref = f'→ primary: {fmt_section_label(primary_sub)}'
+
+                articles.append(dict(
+                    title=title,
+                    url=url,
+                    pub_date=pub_date,
+                    wordcount=wordcount,
+                    sub_id=sub_id,
+                    cross_ref=cross_ref,
+                ))
     return articles
 
 
@@ -188,7 +242,14 @@ def main():
             continue
 
         # Build new <li>
-        new_li   = make_li(soup, art['title'], art['url'], art['pub_date'], art['wordcount'])
+        new_li   = make_li(
+            soup,
+            art['title'],
+            art['url'],
+            art['pub_date'],
+            art['wordcount'],
+            art.get('cross_ref'),
+        )
         new_date = parse_date(art['pub_date'])
 
         # Insert at correct position (descending date order)
