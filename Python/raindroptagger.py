@@ -166,6 +166,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+CSV_WRITE_ENCODING = "utf-8-sig"
+CSV_READ_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
+
+
 def build_http_session():
     session = requests.Session()
     retry = Retry(
@@ -576,6 +580,19 @@ def build_output_path(input_path, suffix="_raindroptagged.csv"):
     return f"{root}{suffix}"
 
 
+def read_csv_with_fallbacks(csv_path):
+    last_error = None
+    for encoding in CSV_READ_ENCODINGS:
+        try:
+            return pd.read_csv(csv_path, encoding=encoding)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            continue
+    if last_error:
+        raise last_error
+    return pd.read_csv(csv_path)
+
+
 def sanitize_url_for_filename(url):
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
@@ -881,7 +898,8 @@ def save_results_csv(articles, output_csv_path, original_columns=None, notes_col
     output_dir = os.path.dirname(output_csv_path)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    df.to_csv(output_csv_path, index=False)
+    # utf-8-sig keeps Unicode punctuation intact and opens cleanly in Excel.
+    df.to_csv(output_csv_path, index=False, encoding=CSV_WRITE_ENCODING)
     logger.info(f"Saved results to {output_csv_path}")
 
 
@@ -941,7 +959,7 @@ def main():
     elif args.csv:
         if not os.path.exists(args.csv):
             raise FileNotFoundError(f"CSV not found: {args.csv}")
-        df = pd.read_csv(args.csv)
+        df = read_csv_with_fallbacks(args.csv)
         url_col = detect_url_column(df)
         if url_col is None:
             raise ValueError("Could not detect URL column in CSV. Add a column named 'url' or include links.")
