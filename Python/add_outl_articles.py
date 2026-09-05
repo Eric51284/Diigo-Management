@@ -29,7 +29,7 @@ from bs4 import BeautifulSoup
 # ── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR = r'c:\Users\evanzant\Dropbox (Personal)\Projects\Diigo Management'
 HTML_PATH = os.path.join(BASE_DIR, 'Output files', 'Capstone AI articles.html')
-CSV_PATH  = os.path.join(BASE_DIR, 'Output files', 'new_rdtagged.csv')
+CSV_PATH  = os.path.join(BASE_DIR, 'Output files', 'new_raindroptagged.csv')
 CSV_ENCODING = 'utf-8-sig'
 
 # ── Roman-numeral → integer ────────────────────────────────────────────────────
@@ -285,13 +285,24 @@ def main():
             if span:
                 span.string = f'({count} articles)'
 
-    # ── Update header total ────────────────────────────────────────────────────
-    total = sum(len(ul.find_all('li')) for ul in soup.find_all('ul', class_='arts'))
+    # ── Update header totals (articles/sections/subsections) ──────────────────
+    # Header total should represent unique articles, not list placements.
+    unique_urls = {
+        a['href'].strip()
+        for a in soup.select('ul.arts li a[href]')
+        if a.get('href') and a['href'].strip()
+    }
+    total = len(unique_urls)
+    section_count = len(soup.select('details.sec'))
+    subsection_count = len(soup.select('details.sub'))
     header = soup.find('header')
     if header:
         p = header.find('p')
         if p:
-            p.string = re.sub(r'\d+ articles', f'{total} articles', p.get_text())
+            p.string = (
+                f'{total} articles · {section_count} sections · '
+                f'{subsection_count} subsections'
+            )
 
         # ── Update / add "Last updated" date paragraph in header ───────────────
         today_str = date.today().isoformat()

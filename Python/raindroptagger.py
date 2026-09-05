@@ -3,15 +3,15 @@ raindroptagger.py
 =================
 Built by Claude Sonnet-4.6 on 2026-02-26
 
-Fetches each article URL from a CSV or Word docx input file and enriches it
-with two pieces of metadata extracted from the live page (or a saved local
-HTML fallback):
+Fetch each article URL from CSV or Word docx input and enrich each row with:
 
     • pub_date   — publication date (YYYY-MM-DD or partial)
     • wordcount  — estimated article body word count
 
-The enriched data is written to an output CSV for downstream use (e.g. as
-input to outline_updater.py or raindrop import workflows).
+For CSV inputs, AI-tagged rows can also receive semantic outline placement
+against Output files/Capstone AI outline headings.csv. On a confident match,
+the script writes AI outline diagnostics and upserts a primary _outl:ROMAN-LETTER
+token into the tags column.
 
 Usage
 -----
@@ -26,15 +26,12 @@ Usage
     # Slow down requests (default: 2 s between each):
     python raindroptagger.py --csv input.csv --delay 3.5
 
-    # Retry blocked URLs via the browser, then re-fetch with cookies:
+    # Retry blocked URLs via browser, then re-fetch with cookies:
     python raindroptagger.py --csv input.csv --manual-browser-retry
     python raindroptagger.py --csv input.csv --manual-browser-retry --browser-cookies edge
 
-    # Fall back to locally saved HTML files for failed fetches:
+    # Fall back to saved local HTML files for failed fetches:
     python raindroptagger.py --csv input.csv --local-html-dir "Source files/saved_html"
-
-    # Use a per-row column in the CSV to point to a saved HTML file:
-    python raindroptagger.py --csv input.csv --local-html-path-column local_html_path
 
 Requirements
 ------------
@@ -46,7 +43,7 @@ Optional (improves text extraction accuracy):
 
 Input format: CSV
 -----------------
-Any CSV containing at minimum a URL column.  Column names are auto-detected
+Any CSV containing at minimum a URL column. Column names are auto-detected
 (case-insensitive):
 
     url column   — detected by name: url, URL, link, Link
@@ -54,87 +51,100 @@ Any CSV containing at minimum a URL column.  Column names are auto-detected
     title column — detected by name: title, Title, headline
                    (optional; rows without a detected title column use "")
     notes column — detected by name: notes, Notes, note, Note, description,
-                   Description, annotation, comment, tags, Tags
+                   Description, annotation, comment
                    If found, wordcount and pub_date are appended to this
-                   column in the output (see below).  If no notes column is
-                   detected, a new "notes" column is created.
+                   column. If no notes column is detected, a new "notes"
+                   column is created.
+    tags column  — detected by name: tags, Tags, tag, Tag
+                   Used for AI row detection and routing hints.
+                   If AI placement matches, _outl:* is upserted (existing
+                   _outl tokens are replaced, not duplicated).
     local_html_path
-                 — optional per-row path to a saved .html file used as a
-                   fallback when a live fetch fails; column name is
+                 — optional per-row path to saved .html fallback; name is
                    configurable via --local-html-path-column
 
-All original input columns are preserved in the output in their original
-order.  Extra diagnostic columns are appended after them.
+All original input columns are preserved in output order. Diagnostic columns
+are appended after them.
 
 Input format: Word docx
 -----------------------
 Every paragraph that starts with "-" or contains "http" is treated as an
-article entry.  The paragraph text (minus the leading "– ") becomes the
-title; hyperlinks embedded in the paragraph are extracted as the URL.
+article entry. The paragraph text (minus leading "- ") becomes title;
+embedded hyperlinks are extracted as URL.
 
 Output CSV columns
 ------------------
-For CSV input, the output preserves every original column.  The notes column
-(detected or newly created) is updated in place with appended metadata:
+For CSV input, original columns are preserved. Notes are annotated with:
 
     <original notes text> wordcount:nnnn pub:yyyy-mm-dd
 
-The following diagnostic columns are appended after all original columns:
+Appended diagnostics:
 
-    pub_date        — publication date string (YYYY-MM-DD, YYYY-MM, or YYYY),
-                      or empty if not found
-    date_status     — how the date was found (meta, jsonld, time_attr,
-                      class_text, text_pattern, local_*, no_date_found…)
-    wordcount       — estimated article body word count (integer), or empty
-    wc_status       — success / no_url / no_text_found / http_NNN / …
-    wc_method       — extraction method used (article_p, trafilatura,
-                      jsonld, main_p, article_tag, local_*, …)
-    local_html_path — path to the saved HTML file used (if any)
+    pub_date                 — publication date string or empty
+    date_status              — date extraction path (meta/jsonld/time/local_*/...)
+    wordcount                — estimated body word count or empty
+    wc_status                — success / no_url / no_text_found / http_NNN / ...
+    wc_method                — extraction method used
+    local_html_path          — fallback HTML path used (if any)
+    ai_outline_tag           — matched outline tag (example: IV-B)
+    ai_outline_subsection_id — matched subsection id (example: s4b)
+    ai_outline_heading       — matched subsection heading text
+    ai_outline_score         — final semantic score (with boosts)
+    ai_outline_score_margin  — best score minus second-best score
+    ai_outline_status        — matched / ambiguous:* / low_confidence:* /
+                               no_shared_terms / no_semantic_text /
+                               not_ai_tagged / no_url / ...
 
-Date extraction strategy (in priority order)
---------------------------------------------
-    1. HTML <meta> tags (article:published_time, DC.date, etc.)
-    2. JSON-LD structured data (datePublished, dateCreated, etc.)
-    3. <time datetime="…"> / <time pubdate> attributes
-    4. Common date-bearing CSS class names (.published-date, .timestamp, …)
-    5. Raw text pattern matching (e.g. "Published: March 2, 2026")
+AI outline assignment behavior
+------------------------------
+Assignment runs only for rows matching --ai-tag-pattern
+(default matches ai or #ai token).
 
-Word-count extraction strategy (in priority order)
----------------------------------------------------
-    1. JSON-LD articleBody / text / description fields
-    2. trafilatura (if installed)
-    3. <article> → <p> text nodes
-    4. <main> → <p> text nodes
-    5. All <p> text nodes
-    6. Full BS4 boilerplate-filtered body text
+Base ranking uses semantic overlap between article text and subsection headings.
+Existing tags and title cues provide score boosts to break ties and improve
+placement. Examples of built-in hints:
+
+    privacy -> IV-E
+    regulatory + open call -> IV-B
+    dystopian -> VII-F
+    how to + personal tools -> II-F
+    education + medical -> V-D
+    agentic or release-style title cues -> I-G
 
 CLI arguments
 -------------
     --csv PATH                  Input CSV file
     --docx PATH                 Input Word docx file
     -o / --output PATH          Output CSV path
-                                  default for --csv:  <input>_raindroptagged.csv
+                                  default for --csv: <input>_raindroptagged.csv
                                   default for --docx: Output files/raindrop_tagged.csv
-    --delay FLOAT               Seconds to wait between requests  [default: 2.0]
-    --heartbeat-every INT       Log a progress summary every N requests  [default: 10]
-    --manual-browser-retry      On HTTP/request errors, open the URL in the
-                                  default browser and pause for manual unlock,
-                                  then retry the fetch
-    --browser-cookies BROWSER   Load live browser cookies during manual retries
+    --delay FLOAT               Seconds to wait between requests [default: 2.0]
+    --heartbeat-every INT       Log progress every N requests [default: 10]
+    --manual-browser-retry      On HTTP/request errors, open URL in browser,
+                                  then retry fetch
+    --browser-cookies BROWSER   Use browser cookies during manual retries
                                   choices: chrome | edge | firefox
-    --manual-wait-seconds INT   When stdin is non-interactive (e.g. piped),
-                                  wait this many seconds before the retry
-                                  instead of prompting  [default: 20]
-    --local-html-dir DIR        Directory of saved .html/.htm fallback files;
-                                  filenames are matched by URL-derived slug
+    --manual-wait-seconds INT   Wait seconds for non-interactive manual retry
+                                  [default: 20]
+    --local-html-dir DIR        Directory of saved .html/.htm fallback files
     --local-html-path-column COL
-                                CSV column name for per-row local HTML paths
+                                CSV column for per-row local HTML path
                                   [default: local_html_path]
+    --outline-headings-csv PATH Outline headings CSV for AI semantic placement
+                                  [default: Output files/Capstone AI outline headings.csv]
+    --disable-ai-outline-assignment
+                                Disable AI semantic outline placement
+    --ai-outline-min-score FLOAT
+                                Minimum score required to accept placement
+    --ai-tag-pattern REGEX      Regex used to detect AI rows
+                                  [default: (^|[\s,;])#?ai\b]
 """
 
 import argparse
+import csv
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -168,6 +178,35 @@ logger = logging.getLogger(__name__)
 
 CSV_WRITE_ENCODING = "utf-8-sig"
 CSV_READ_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
+
+OUTLINE_DEFAULT_CSV = os.path.join("Output files", "Capstone AI outline headings.csv")
+
+TAG_CANDIDATE_COLUMNS = ["tags", "Tags", "tag", "Tag"]
+NOTES_CANDIDATE_COLUMNS = ["notes", "Notes", "note", "Note", "description", "Description", "annotation", "comment"]
+
+STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have", "how",
+    "in", "is", "it", "its", "of", "on", "or", "that", "the", "their", "this", "to", "with",
+    "about", "into", "over", "under", "across", "within", "between", "via", "vs", "using",
+    "ai", "artificial", "intelligence",
+}
+
+TAG_OUTLINE_HINTS = {
+    "privacy": "IV-E",
+    "regulatory": "IV-B",
+    "open call": "IV-B",
+    "personal tools": "II-F",
+    "education": "V-D",
+    "medical": "V-D",
+    "dystopian": "VII-F",
+    "agentic": "I-G",
+    "key release": "I-G",
+}
+
+TITLE_RELEASE_PATTERN = re.compile(
+    r"\b(is\s+here|released?|launch(?:ed)?|roll(?:ed)?\s*out|version|gpt[-\s]?\d|claude\s*\d|openclaw\s*\d)\b",
+    re.IGNORECASE,
+)
 
 
 def build_http_session():
@@ -221,6 +260,267 @@ def normalize_text(text):
 def count_words(text):
     words = re.findall(r"\b[\w'-]+\b", text)
     return len(words)
+
+
+def tokenize_for_semantic(text):
+    if not text:
+        return []
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9'-]{1,}", text.lower())
+    clean = []
+    for tok in tokens:
+        tok = tok.strip("'-")
+        if len(tok) < 2:
+            continue
+        if tok in STOPWORDS:
+            continue
+        clean.append(tok)
+    return clean
+
+
+def sub_id_to_outl_tag(sub_id):
+    m = re.fullmatch(r"s(\d+)([a-z])", str(sub_id or ""), re.IGNORECASE)
+    if not m:
+        return None
+    roman_map = {
+        1: "I", 2: "II", 3: "III", 4: "IV", 5: "V",
+        6: "VI", 7: "VII", 8: "VIII", 9: "IX", 10: "X",
+    }
+    sec_num = int(m.group(1))
+    roman = roman_map.get(sec_num)
+    if not roman:
+        return None
+    return f"{roman}-{m.group(2).upper()}"
+
+
+def outl_tag_to_sub_id(outl_tag):
+    if not outl_tag:
+        return None
+    m = re.fullmatch(r"([IVX]+)-([A-Z])", str(outl_tag).strip(), re.IGNORECASE)
+    if not m:
+        return None
+    roman_to_num = {
+        "I": 1, "II": 2, "III": 3, "IV": 4, "V": 5,
+        "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10,
+    }
+    sec_num = roman_to_num.get(m.group(1).upper())
+    if sec_num is None:
+        return None
+    return f"s{sec_num}{m.group(2).lower()}"
+
+
+def split_tag_tokens(tag_value):
+    if tag_value is None:
+        return []
+    raw = str(tag_value)
+    parts = [p.strip().lower() for p in re.split(r"[,;]", raw) if p and p.strip()]
+    return parts
+
+
+def derive_outline_hints_from_tags(tag_value):
+    tokens = split_tag_tokens(tag_value)
+    token_set = set(tokens)
+    hints = {}
+
+    if "regulatory" in token_set and "dystopian" in token_set:
+        sub_id = outl_tag_to_sub_id("IV-B")
+        if sub_id:
+            hints[sub_id] = 0.35
+
+    if "education" in token_set and "medical" in token_set:
+        sub_id = outl_tag_to_sub_id("V-D")
+        if sub_id:
+            hints[sub_id] = max(hints.get(sub_id, 0.0), 0.30)
+
+    if "how to" in token_set and "personal tools" in token_set:
+        sub_id = outl_tag_to_sub_id("II-F")
+        if sub_id:
+            hints[sub_id] = max(hints.get(sub_id, 0.0), 0.30)
+
+    for tok in tokens:
+        outl = TAG_OUTLINE_HINTS.get(tok)
+        if not outl:
+            continue
+        sub_id = outl_tag_to_sub_id(outl)
+        if not sub_id:
+            continue
+        hints[sub_id] = max(hints.get(sub_id, 0.0), 0.22)
+
+    if "how to" in token_set and "privacy" not in token_set:
+        sub_id = outl_tag_to_sub_id("II-F")
+        if sub_id:
+            hints[sub_id] = max(hints.get(sub_id, 0.0), 0.18)
+
+    return hints
+
+
+def derive_outline_hints_from_title(title):
+    if not title:
+        return {}
+    hints = {}
+    if TITLE_RELEASE_PATTERN.search(str(title)):
+        sub_id = outl_tag_to_sub_id("I-G")
+        if sub_id:
+            hints[sub_id] = 0.25
+    return hints
+
+
+def load_outline_matcher(outline_csv_path):
+    if not outline_csv_path or not os.path.exists(outline_csv_path):
+        logger.warning("Outline headings CSV not found: %s", outline_csv_path)
+        return None
+
+    section_titles = {}
+    subsection_profiles = []
+
+    with open(outline_csv_path, newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            level = str(row.get("level") or "").strip()
+            section_id = str(row.get("section_id") or "").strip()
+            title = str(row.get("title") or "").strip()
+            if level == "1" and section_id and title:
+                section_titles[section_id] = title
+
+    with open(outline_csv_path, newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            level = str(row.get("level") or "").strip()
+            if level != "2":
+                continue
+            section_id = str(row.get("section_id") or "").strip()
+            subsection_id = str(row.get("subsection_id") or "").strip()
+            sub_title = str(row.get("title") or "").strip()
+            if not subsection_id or not sub_title:
+                continue
+            section_title = section_titles.get(section_id, "")
+            merged_text = f"{sub_title} {section_title}".strip()
+            token_set = set(tokenize_for_semantic(merged_text))
+            subsection_profiles.append(
+                {
+                    "section_id": section_id,
+                    "subsection_id": subsection_id,
+                    "outline_tag": sub_id_to_outl_tag(subsection_id),
+                    "title": sub_title,
+                    "section_title": section_title,
+                    "tokens": token_set,
+                }
+            )
+
+    if not subsection_profiles:
+        logger.warning("No subsection rows found in outline headings CSV: %s", outline_csv_path)
+        return None
+
+    doc_count = len(subsection_profiles)
+    token_df = {}
+    for profile in subsection_profiles:
+        for tok in profile["tokens"]:
+            token_df[tok] = token_df.get(tok, 0) + 1
+
+    idf = {tok: (math.log((doc_count + 1) / (df + 1)) + 1.0) for tok, df in token_df.items()}
+
+    for profile in subsection_profiles:
+        token_weight_sq = sum((idf.get(tok, 1.0) ** 2) for tok in profile["tokens"])
+        profile["token_norm"] = math.sqrt(token_weight_sq) if token_weight_sq > 0 else 1.0
+
+    logger.info("Loaded %d outline subsections from %s", len(subsection_profiles), outline_csv_path)
+    return {"profiles": subsection_profiles, "idf": idf}
+
+
+def semantic_match_outline(
+    title,
+    article_text,
+    outline_matcher,
+    min_score=0.12,
+    min_margin=0.015,
+    boost_hints=None,
+):
+    if not outline_matcher:
+        return None, "outline_unavailable"
+
+    combined = f"{title or ''} {article_text or ''}".strip()
+    article_tokens = set(tokenize_for_semantic(combined))
+    if not article_tokens:
+        return None, "no_semantic_text"
+
+    idf = outline_matcher["idf"]
+    article_norm_sq = sum((idf.get(tok, 1.0) ** 2) for tok in article_tokens)
+    if article_norm_sq <= 0:
+        return None, "no_semantic_text"
+    article_norm = math.sqrt(article_norm_sq)
+
+    scored = []
+    boost_hints = boost_hints or {}
+
+    for profile in outline_matcher["profiles"]:
+        shared = article_tokens & profile["tokens"]
+        if not shared:
+            score = 0.0
+        else:
+            dot = sum((idf.get(tok, 1.0) ** 2) for tok in shared)
+            score = dot / max(article_norm * profile["token_norm"], 1e-9)
+
+        score += float(boost_hints.get(profile["subsection_id"], 0.0))
+        if score <= 0:
+            continue
+        scored.append((score, profile))
+
+    if not scored:
+        return None, "no_shared_terms"
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best_score, best_profile = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else 0.0
+
+    if best_score < min_score:
+        return None, f"low_confidence:{best_score:.3f}"
+    if (best_score - second_score) < min_margin:
+        return None, f"ambiguous:{best_score:.3f}/{second_score:.3f}"
+
+    best_profile = dict(best_profile)
+    best_profile["score"] = round(best_score, 4)
+    best_profile["score_margin"] = round(best_score - second_score, 4)
+    return best_profile, "matched"
+
+
+def is_ai_tagged_article(article, tag_col=None, notes_col=None, ai_tag_pattern=r"(^|[\s,;])#?ai\b"):
+    rx = re.compile(ai_tag_pattern, re.IGNORECASE)
+    candidate_cols = []
+    if tag_col:
+        candidate_cols.append(tag_col)
+    if notes_col and notes_col not in candidate_cols:
+        candidate_cols.append(notes_col)
+    for fallback in TAG_CANDIDATE_COLUMNS + NOTES_CANDIDATE_COLUMNS:
+        if fallback not in candidate_cols:
+            candidate_cols.append(fallback)
+
+    for col in candidate_cols:
+        val = article.get(col)
+        if val is None:
+            continue
+        text = str(val)
+        if rx.search(text):
+            return True
+    return False
+
+
+def append_csv_tag(existing_value, new_tag):
+    existing = str(existing_value or "").strip()
+    if not existing:
+        return new_tag
+    parts = [p.strip() for p in existing.split(",") if p.strip()]
+    norm = {p.lower() for p in parts}
+    if new_tag.lower() in norm:
+        return existing
+    parts.append(new_tag)
+    return ", ".join(parts)
+
+
+def upsert_outline_tag(existing_value, outl_tag_token):
+    existing = str(existing_value or "").strip()
+    parts = [p.strip() for p in existing.split(",") if p.strip()]
+    kept = [p for p in parts if not p.lower().startswith("_outl:")]
+    kept.append(outl_tag_token)
+    return ", ".join(kept)
 
 
 def parse_date_string(date_str):
@@ -482,6 +782,40 @@ def get_wordcount_from_html(html_text, soup):
     return best_wc, "success", best_method
 
 
+def extract_semantic_text_from_html(html_text, soup):
+    candidates = []
+    jsonld_text, _ = extract_json_ld_article_text(html_text)
+    if jsonld_text:
+        candidates.append(jsonld_text)
+    tr_text, _ = extract_main_text_with_trafilatura(html_text)
+    if tr_text:
+        candidates.append(tr_text)
+    if soup:
+        article_node = soup.find("article")
+        if article_node:
+            article_p_text = normalize_text(" ".join(p.get_text(" ", strip=True) for p in article_node.find_all("p")))
+            if article_p_text:
+                candidates.append(article_p_text)
+        main_node = soup.find("main")
+        if main_node:
+            main_p_text = normalize_text(" ".join(p.get_text(" ", strip=True) for p in main_node.find_all("p")))
+            if main_p_text:
+                candidates.append(main_p_text)
+        bs4_text, _ = extract_main_text_with_bs4(soup)
+        if bs4_text:
+            candidates.append(bs4_text)
+
+    # Prefer the richest extracted candidate as semantic context.
+    best_text = ""
+    best_wc = 0
+    for text in candidates:
+        wc = count_words(text)
+        if wc > best_wc:
+            best_text = text
+            best_wc = wc
+    return best_text
+
+
 # ---------- Document hyperlink extraction (from NewArticles) ----------
 
 def extract_hyperlink_method1(paragraph):
@@ -700,6 +1034,12 @@ def process_articles(
     manual_wait_seconds=20,
     local_html_dir=None,
     local_html_path_column="local_html_path",
+    outline_matcher=None,
+    ai_outline_enabled=False,
+    ai_outline_min_score=0.12,
+    ai_outline_tag_col=None,
+    notes_col=None,
+    ai_tag_pattern=r"(^|[\s,;])#?ai\b",
 ):
     total = len(articles)
     processed = 0
@@ -708,8 +1048,25 @@ def process_articles(
     for idx, article in enumerate(articles, 1):
         url = article.get("url")
         title = article.get("title") or ""
+        ai_tagged = is_ai_tagged_article(article, tag_col=ai_outline_tag_col, notes_col=notes_col, ai_tag_pattern=ai_tag_pattern)
+        tag_hint_boosts = derive_outline_hints_from_tags(article.get(ai_outline_tag_col)) if ai_outline_tag_col else {}
+        title_hint_boosts = derive_outline_hints_from_title(title)
+        boost_hints = {}
+        for sub_id, weight in tag_hint_boosts.items():
+            boost_hints[sub_id] = max(boost_hints.get(sub_id, 0.0), weight)
+        for sub_id, weight in title_hint_boosts.items():
+            boost_hints[sub_id] = max(boost_hints.get(sub_id, 0.0), weight)
         if not url:
-            article.update({"pub_date": None, "date_status": "no_url", "wordcount": None, "wc_status": "no_url", "wc_method": None})
+            article.update(
+                {
+                    "pub_date": None,
+                    "date_status": "no_url",
+                    "wordcount": None,
+                    "wc_status": "no_url",
+                    "wc_method": None,
+                    "ai_outline_status": "no_url" if ai_tagged else "not_ai_tagged",
+                }
+            )
             continue
         processed += 1
         logger.info(f"[{processed}/{total}] Fetching {url[:90]}")
@@ -767,6 +1124,34 @@ def process_articles(
                         pub_date, date_status = get_pub_date_from_soup(soup)
                         wc, wc_status, wc_method = get_wordcount_from_html(html_text, soup)
                         article.update({"pub_date": pub_date, "date_status": date_status, "wordcount": wc, "wc_status": wc_status, "wc_method": wc_method})
+                        if ai_tagged and ai_outline_enabled:
+                            sem_text = extract_semantic_text_from_html(html_text, soup)
+                            match, sem_status = semantic_match_outline(
+                                title,
+                                sem_text,
+                                outline_matcher,
+                                min_score=ai_outline_min_score,
+                                boost_hints=boost_hints,
+                            )
+                            if match:
+                                article.update(
+                                    {
+                                        "ai_outline_tag": match.get("outline_tag"),
+                                        "ai_outline_subsection_id": match.get("subsection_id"),
+                                        "ai_outline_heading": match.get("title"),
+                                        "ai_outline_score": match.get("score"),
+                                        "ai_outline_score_margin": match.get("score_margin"),
+                                        "ai_outline_status": sem_status,
+                                    }
+                                )
+                                if ai_outline_tag_col and match.get("outline_tag"):
+                                    article[ai_outline_tag_col] = upsert_outline_tag(article.get(ai_outline_tag_col), f"_outl:{match['outline_tag']}")
+                            else:
+                                article.update({"ai_outline_status": sem_status})
+                        elif ai_tagged:
+                            article.update({"ai_outline_status": "outline_disabled"})
+                        else:
+                            article.update({"ai_outline_status": "not_ai_tagged"})
                         if wc_status == "success":
                             success_count += 1
                         retried_status = "success"
@@ -802,6 +1187,34 @@ def process_articles(
                             "local_html_path": local_html_source or failed_html_path,
                         }
                     )
+                    if ai_tagged and ai_outline_enabled:
+                        sem_text = extract_semantic_text_from_html(local_html_text, local_html_soup)
+                        match, sem_status = semantic_match_outline(
+                            title,
+                            sem_text,
+                            outline_matcher,
+                            min_score=ai_outline_min_score,
+                            boost_hints=boost_hints,
+                        )
+                        if match:
+                            article.update(
+                                {
+                                    "ai_outline_tag": match.get("outline_tag"),
+                                    "ai_outline_subsection_id": match.get("subsection_id"),
+                                    "ai_outline_heading": match.get("title"),
+                                    "ai_outline_score": match.get("score"),
+                                    "ai_outline_score_margin": match.get("score_margin"),
+                                    "ai_outline_status": sem_status,
+                                }
+                            )
+                            if ai_outline_tag_col and match.get("outline_tag"):
+                                article[ai_outline_tag_col] = upsert_outline_tag(article.get(ai_outline_tag_col), f"_outl:{match['outline_tag']}")
+                        else:
+                            article.update({"ai_outline_status": sem_status})
+                    elif ai_tagged:
+                        article.update({"ai_outline_status": "outline_disabled"})
+                    else:
+                        article.update({"ai_outline_status": "not_ai_tagged"})
                     if wc_status == "success":
                         success_count += 1
                 else:
@@ -813,12 +1226,41 @@ def process_articles(
                             "wc_status": retried_status,
                             "wc_method": None,
                             "local_html_path": local_html_source or failed_html_path,
+                            "ai_outline_status": retried_status if ai_tagged else "not_ai_tagged",
                         }
                     )
         else:
             pub_date, date_status = get_pub_date_from_soup(soup)
             wc, wc_status, wc_method = get_wordcount_from_html(html_text, soup)
             article.update({"pub_date": pub_date, "date_status": date_status, "wordcount": wc, "wc_status": wc_status, "wc_method": wc_method, "local_html_path": None})
+            if ai_tagged and ai_outline_enabled:
+                sem_text = extract_semantic_text_from_html(html_text, soup)
+                match, sem_status = semantic_match_outline(
+                    title,
+                    sem_text,
+                    outline_matcher,
+                    min_score=ai_outline_min_score,
+                    boost_hints=boost_hints,
+                )
+                if match:
+                    article.update(
+                        {
+                            "ai_outline_tag": match.get("outline_tag"),
+                            "ai_outline_subsection_id": match.get("subsection_id"),
+                            "ai_outline_heading": match.get("title"),
+                            "ai_outline_score": match.get("score"),
+                            "ai_outline_score_margin": match.get("score_margin"),
+                            "ai_outline_status": sem_status,
+                        }
+                    )
+                    if ai_outline_tag_col and match.get("outline_tag"):
+                        article[ai_outline_tag_col] = upsert_outline_tag(article.get(ai_outline_tag_col), f"_outl:{match['outline_tag']}")
+                else:
+                    article.update({"ai_outline_status": sem_status})
+            elif ai_tagged:
+                article.update({"ai_outline_status": "outline_disabled"})
+            else:
+                article.update({"ai_outline_status": "not_ai_tagged"})
             if date_status == "no_date_found":
                 logger.info(f"No date for: {title[:60]}")
             if wc_status == "success":
@@ -876,7 +1318,20 @@ def save_results_csv(articles, output_csv_path, original_columns=None, notes_col
     # ── Build output column order ─────────────────────────────────────────────
     # Base: original input columns (in original order, notes already updated)
     # Appended: diagnostic columns not present in the original input
-    extra_cols = ["pub_date", "date_status", "wordcount", "wc_status", "wc_method", "local_html_path"]
+    extra_cols = [
+        "pub_date",
+        "date_status",
+        "wordcount",
+        "wc_status",
+        "wc_method",
+        "local_html_path",
+        "ai_outline_tag",
+        "ai_outline_subsection_id",
+        "ai_outline_heading",
+        "ai_outline_score",
+        "ai_outline_score_margin",
+        "ai_outline_status",
+    ]
 
     if original_columns:
         base_cols = [c for c in original_columns if c in df.columns]
@@ -947,11 +1402,33 @@ def main():
         default="local_html_path",
         help="CSV column containing per-row local HTML file path fallback.",
     )
+    parser.add_argument(
+        "--outline-headings-csv",
+        default=OUTLINE_DEFAULT_CSV,
+        help="CSV containing section/subsection headings for semantic outline assignment.",
+    )
+    parser.add_argument(
+        "--disable-ai-outline-assignment",
+        action="store_true",
+        help="Disable semantic outline assignment for rows tagged #ai.",
+    )
+    parser.add_argument(
+        "--ai-outline-min-score",
+        type=float,
+        default=0.12,
+        help="Minimum semantic score needed to assign an outline location for #ai rows.",
+    )
+    parser.add_argument(
+        "--ai-tag-pattern",
+        default=r"(^|[\s,;])#?ai\b",
+        help="Regex used to detect AI-tagged rows (default matches ai or #ai token).",
+    )
     args = parser.parse_args()
 
     articles = []
     original_columns = None
     notes_col = None
+    tags_col = None
     if args.docx:
         if not os.path.exists(args.docx):
             raise FileNotFoundError(f"Docx not found: {args.docx}")
@@ -969,9 +1446,14 @@ def main():
                 title_col = c
                 break
         notes_col = None
-        for c in ["notes", "Notes", "note", "Note", "description", "Description", "annotation", "comment", "tags", "Tags"]:
+        for c in NOTES_CANDIDATE_COLUMNS:
             if c in df.columns:
                 notes_col = c
+                break
+        tags_col = None
+        for c in TAG_CANDIDATE_COLUMNS:
+            if c in df.columns:
+                tags_col = c
                 break
         original_columns = list(df.columns)
         for _, row in df.iterrows():
@@ -992,6 +1474,14 @@ def main():
     if args.browser_cookies and not args.manual_browser_retry:
         logger.warning("--browser-cookies is set but --manual-browser-retry is not enabled; cookies will not be used.")
 
+    ai_outline_enabled = not args.disable_ai_outline_assignment
+    outline_matcher = None
+    if ai_outline_enabled:
+        outline_matcher = load_outline_matcher(args.outline_headings_csv)
+        if outline_matcher is None:
+            ai_outline_enabled = False
+            logger.warning("AI outline assignment disabled because outline matcher could not be loaded.")
+
     processed = process_articles(
         articles,
         delay=args.delay,
@@ -1001,6 +1491,12 @@ def main():
         manual_wait_seconds=args.manual_wait_seconds,
         local_html_dir=args.local_html_dir,
         local_html_path_column=args.local_html_path_column,
+        outline_matcher=outline_matcher,
+        ai_outline_enabled=ai_outline_enabled,
+        ai_outline_min_score=args.ai_outline_min_score,
+        ai_outline_tag_col=tags_col,
+        notes_col=notes_col,
+        ai_tag_pattern=args.ai_tag_pattern,
     )
 
     if args.output:
