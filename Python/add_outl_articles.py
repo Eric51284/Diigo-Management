@@ -23,13 +23,14 @@ import csv
 import os
 import re
 from datetime import date
+from pathlib import Path
 
 from bs4 import BeautifulSoup
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-BASE_DIR = r'c:\Users\evanzant\Dropbox (Personal)\Projects\Diigo Management'
-HTML_PATH = os.path.join(BASE_DIR, 'Output files', 'Capstone AI articles.html')
-CSV_PATH  = os.path.join(BASE_DIR, 'Output files', 'new_raindroptagged.csv')
+BASE_DIR = Path(__file__).resolve().parent.parent
+HTML_PATH = BASE_DIR / 'Output files' / 'Capstone AI articles.html'
+CSV_PATH  = BASE_DIR / 'Output files' / 'new_raindroptagged.csv'
 CSV_ENCODING = 'utf-8-sig'
 
 # ── Roman-numeral → integer ────────────────────────────────────────────────────
