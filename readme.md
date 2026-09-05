@@ -40,6 +40,7 @@
  - copy the new html to local project folder and push to website
 # UPDATE 2026-09-04
   - <span style="color: green;">Added automated outline assignment via semantic analysis to raindroptagger.py</span>
+  - To refresh the outline headings file, run `python "Python/extract_outline_headings.py" "Output files/Capstone AI articles.html" "Output files/Capstone AI outline headings.csv"`
   - export 'Unsorted' raindrop folder to .csv and run `raindroptagger.py` to generate new .csv with pub dates, word counts, and outline assignments for 'ai'-tagged articles.
   - DOUBLE CHECK outline assignments
   - upload the new .csv into raindrop and move articles to proper folders
