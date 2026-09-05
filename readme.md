@@ -38,3 +38,10 @@
   - in the form `, _outl:IV-C` using appropriate outline designators
  - run `python "Python/add_outl_articles.py"` on the exported csv to include in the "Capstone AI articles.html"
  - copy the new html to local project folder and push to website
+# UPDATE 2026-09-04
+  - <span style="color: green;">Added automated outline assignment via semantic analysis to raindroptagger.py</span>
+  - export 'Unsorted' raindrop folder to .csv and run `raindroptagger.py` to generate new .csv with pub dates, word counts, and outline assignments for 'ai'-tagged articles.
+  - DOUBLE CHECK outline assignments
+  - upload the new .csv into raindrop and move articles to proper folders
+  -  - run `python "Python/add_outl_articles.py"` on the exported csv to include in the "Capstone AI articles.html"
+ - copy the new html to local project folder and push to website
